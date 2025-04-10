@@ -1,29 +1,18 @@
 //mod crate::strategy;
-use crate::strategy::{Strategy, Tick};
+use crate::{gateway::order, strategy::{self, Strategy, Tick, Trade}};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::boxed::Box;
 use std::collections::HashMap;
+use crate::gateway::{Gateway, MockGateway, OrderRequest};
 
-#[derive(Debug, Clone)]
-pub enum Direction {
-    Buy,
-    Sell,
-}
-#[derive(Debug, Clone)]
-pub struct Trade {
-    pub symbol: String,
-    pub order_id: String,
-    pub price: f64,
-    pub volume: f64,
-    pub direction: Direction, // Buy / Sell
-    pub timestamp: DateTime<Utc>,
-}
+
 
 pub struct Engine {
     pub name: String,
     pub strategies: HashMap<String, Box<dyn Strategy>>,
+    pub gateway: Box<dyn Gateway>,
 }
 
 impl Engine {
@@ -31,6 +20,10 @@ impl Engine {
         Engine {
             name: name.to_string(),
             strategies: HashMap::new(),
+            gateway: Box::new(MockGateway {
+                name: "mock_gateway".to_string(),
+                subscribed_names: vec![],
+            }),
         }
     }
 
@@ -42,24 +35,65 @@ impl Engine {
         self.strategies.insert(strategy_name, strategy);
     }
 
-    pub fn on_tick(&mut self, tick: &Tick) -> anyhow::Result<()> {
-        for strategy in self.strategies.values_mut() {
-            strategy.on_tick(tick)?;
+    pub fn on_tick(&mut self, tick: &Tick) -> HashMap<String, Option<Trade>> {
+        let mut trades_by_name = HashMap::new();
+
+        for (strategy_name, strategy) in &mut self.strategies {
+            let trade_signal = strategy.on_tick(tick);
+            trades_by_name.insert(strategy_name.clone(), trade_signal);
         }
-        Ok(())
+        trades_by_name
     }
+
     pub fn on_trade(&self, trade: &Trade) -> anyhow::Result<()> {
         Ok(())
     }
 
     pub fn send_order(&self, order: &Trade) -> anyhow::Result<()> {
-        Ok(())
+
+        
+        let side = match order.direction {
+            strategy::Direction::Buy => order::OrderSide::Buy,
+            strategy::Direction::Sell => order::OrderSide::Sell,
+        };
+        let order_request  = OrderRequest {
+            symbol: order.symbol.clone(),
+            price: order.price,
+            volume: order.volume,
+            side: side,
+            order_type:order::OrderType::Limit,
+            gateway: Some(self.gateway.name().to_string()),
+            time_in_force: Some(order::TimeInForce::GTC),
+            stop_price: Some(0f64),
+        };
+
+        let result =self.gateway.send_order(order_request);
+        match result {
+            Ok(order_id) => {
+                println!("Order sent successfully: {}", order_id);
+                self.on_trade(order);
+                return Ok(());
+            }
+            Err(e) => {
+                println!("Failed to send order: {}", e);
+                return Err(e);
+            }
+        }
     }
 
     pub fn run_backtest(&mut self, iterator: impl Iterator<Item = Tick>) -> Result<()> {
-        for trade in iterator {
-            self.on_tick(&trade)?;
+        for tick in iterator {
+            let trades_by_name = self.on_tick(&tick);
+
+            for(strategy_name, trade) in &trades_by_name {
+
+
+                if let Some(trade) = trade {
+                    self.send_order(&trade)?;
+                }
+            }
         }
+        
         Ok(())
     }
 }
@@ -72,11 +106,21 @@ mod tests {
 
     }
 
+    use crate::strategy::Direction;
+
     impl Strategy for NaiveStrategy {
-        fn on_tick(&mut self, tick: &Tick) -> anyhow::Result<()> {
-            self.ticks.push(tick.clone());
-            println!("{}", tick.symbol);
-            Ok(())
+        fn on_tick(&mut self, tick: &Tick) -> Option<Trade> {
+            let tick_clone = tick.clone();
+            self.ticks.push(tick_clone);
+            let trade = Trade {
+                symbol: tick.symbol.clone(),
+                order_id: "order_123".to_string(),
+                price: tick.last_price,
+                volume: tick.volume,
+                direction: Direction::Buy,
+                timestamp: tick.datetime,
+            };
+            Some(trade)
         }
     }
 

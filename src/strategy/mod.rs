@@ -2,8 +2,25 @@ use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
 use anyhow::Result;
 use std::any::Any;
+use std::collections::HashMap;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+pub enum Direction {
+    Buy,
+    Sell,
+}
+
+#[derive(Debug, Clone)]
+pub struct Trade {
+    pub symbol: String,
+    pub order_id: String,
+    pub price: f64,
+    pub volume: f64,
+    pub direction: Direction, // Buy / Sell
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Tick {
     pub symbol: String,                
     pub datetime: DateTime<Utc>,       
@@ -16,7 +33,7 @@ pub struct Tick {
 }
 
 pub trait Strategy: Any {
-    fn on_tick(&mut self, tick: &Tick) -> anyhow::Result<()>;
+    fn on_tick(&mut self, tick: &Tick) -> Option<Trade>;
 }
 
 #[test] 
